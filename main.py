@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from uds_controller import handle_service_request
+from can_interface import CanInterface
 class UDSSimulator(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -17,6 +18,7 @@ class UDSSimulator(QMainWindow):
         self.fake_responses = {}
         self.init_brutal_ui()
         self.setup_fake_responses()
+        self.can_interface = CanInterface()
         
     def init_brutal_ui(self):
         self.setWindowTitle("UDS BRUTAL SIMULATOR")
@@ -339,7 +341,35 @@ class UDSSimulator(QMainWindow):
                 self.response_text.setHtml(f'<span style="color: #00ff00;">POSITIVE RESPONSE: {response}<br>Decoded: {self.decode_response(service_id, response)}</span>')
         else:
             # Real CAN interface would go here
-            response = "7F " + service_id.replace("0x", "") + " 31"  # Service not supported
+            try:
+                self.can_handler.send_message(int(service_id, 16), bytes.fromhex(request.replace(" ", "")))
+                msg = self.can_interface.receive_message(timeout=1)
+                if msg:
+                    response = msg.data.hex(" ").upper()
+                    response_time = round((time.time() - start_time) * 1000, 2)
+                    
+                    # Log response
+                    log_entry = f"[{timestamp}] RX: {response} ({response_time}ms)"
+                    self.log_data.append(log_entry)
+                    
+                    if response.startswith("7F"):
+                        self.log_text.append(f'<span style="color: #ff0000;">{log_entry}</span>')
+                        self.response_text.setHtml(f'<span style="color: #ff0000;">NEGATIVE RESPONSE: {response}<br>Error: {self.get_error_description(response)}</span>')
+                    else:
+                        self.log_text.append(f'<span style="color: #00ff00;">{log_entry}</span>')
+                        self.response_text.setHtml(f'<span style="color: #00ff00;">POSITIVE RESPONSE: {response}<br>Decoded: {self.decode_response(service_id, response)}</span>')
+                else:
+                    response = "No response received"
+                    response_time = round((time.time() - start_time) * 1000, 2)
+                    
+                    log_entry = f"[{timestamp}] RX: {response} ({response_time}ms)"
+                    self.log_data.append(log_entry)
+                    self.log_text.append(f'<span style="color: #ff0000;">{log_entry}</span>')
+                    self.response_text.setHtml(f'<span style="color: #ff0000;">ERROR: No response received</span>')
+            except Exception as e:
+                response = f"Error: {str(e)}"
+                self.response_text.setHtml(f'<span style="color: #ff0000;">ERROR: {response}</span>')
+
             response_time = 50.0
             
             log_entry = f"[{timestamp}] RX: {response} ({response_time}ms)"
@@ -432,14 +462,27 @@ class UDSSimulator(QMainWindow):
             self.service_id_input.setText(old_service)
             
     def toggle_can_connection(self):
-        """Toggle CAN connection"""
-        self.can_connected = not self.can_connected
+        """Toggle CAN interface connection"""
         if self.can_connected:
-            self.connect_btn.setText("DISCONNECT")
-            self.statusBar().showMessage(f"CAN: CONNECTED ({self.channel_input.text()})")
-        else:
+            self.can_interface.disconnect()
+            self.can_connected = False
             self.connect_btn.setText("CONNECT")
             self.statusBar().showMessage("CAN: DISCONNECTED")
+        else:
+            try:
+                interface = self.interface_combo.currentText()
+                channel = self.channel_input.text().strip()
+                bitrate = int(self.bitrate_input.text().strip())
+                self.can_interface = CanInterface(interface, channel, bitrate)
+                self.can_interface.connect()
+                if self.can_interface.bus:
+                    self.can_connected = True
+                    self.connect_btn.setText("DISCONNECT")
+                    self.statusBar().showMessage(f"CAN: CONNECTED ({interface} on {channel} at {bitrate} bps)")
+                else:
+                    QMessageBox.warning(self, "Connection Error", "Failed to connect to CAN interface.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to connect to CAN interface: {e}")
             
     def batch_mode(self):
         """Open batch mode dialog"""
